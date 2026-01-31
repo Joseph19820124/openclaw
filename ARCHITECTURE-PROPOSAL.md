@@ -331,12 +331,79 @@ journalctl -u openclaw-node -f
 | CloudWatch | ~$2.5 |
 | **总计** | **~$67/月** |
 
+## 模拟 IM 工具
+
+由于测试环境不便使用 Slack/Telegram 等即时通讯工具，我们创建了一个模拟 IM 工具。
+
+### 启动方式
+
+```bash
+ssh -i ~/.ssh/openclaw-key.pem ec2-user@44.217.250.149
+cd ~/openclaw
+./tools/sim-im.sh
+```
+
+### 快捷命令
+
+| 命令 | 功能 |
+|------|------|
+| `cpu` | 查询 Node CPU 负载 |
+| `mem` | 查询 Node 内存使用 |
+| `disk` | 查询 Node 磁盘使用 |
+| `status` | 查询整体状态 |
+| `nodes` | 列出所有 Node |
+| `top` | 查看进程列表 |
+| `help` | 显示帮助 |
+| `exit` | 退出 |
+
+### 自然语言查询
+
+输入任意问题，AI 会自动处理：
+- "请帮我查看一下Node节点的CPU使用情况"
+- "检查服务器内存还剩多少"
+- "磁盘快满了吗？"
+
+### 工作原理
+
+```
+用户输入 → sim-im.sh → OpenClaw Agent → Z.AI GLM-4.6 → nodes invoke → Node 执行命令 → 返回结果
+```
+
+## LLM 配置
+
+### 模型提供商
+
+| 项目 | 值 |
+|------|-----|
+| Provider | Z.AI (智谱 AI) |
+| Model | zai/glm-4.6 |
+| API Endpoint | https://open.bigmodel.cn |
+
+### 配置方式
+
+Gateway systemd 服务中配置环境变量：
+```ini
+Environment=ZAI_API_KEY=<your-api-key>
+```
+
+或在 shell 中导出：
+```bash
+export ZAI_API_KEY=<your-api-key>
+```
+
+### 设置默认模型
+
+```bash
+openclaw models set zai/glm-4.6
+```
+
 ## 注意事项
 
 1. **这是测试环境**，与生产环境物理隔离
 2. Node 命令执行权限设置为 `full`，生产环境应使用 `allowlist`
 3. 当前使用 HTTP/WS（端口 18789），未启用 TLS
 4. Gateway Token 已配置，Node 连接需要提供正确的 token
+5. Z.AI API Key 已配置在 Gateway systemd 服务中
 
 ## 故障排除
 
