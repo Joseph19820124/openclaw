@@ -602,3 +602,151 @@ This separation allows:
 2. **Scalability**: Many Nodes can connect to one Gateway
 3. **Security**: Node only executes pre-approved commands
 4. **Simplicity**: Node is lightweight (no AI dependencies)
+
+## CLI Commands: Gateway vs Node Execution
+
+### Where Can CLI Commands Be Run?
+
+| Command | On Gateway | On Node | Notes |
+|---------|------------|---------|-------|
+| `openclaw nodes status` | ✅ Works | ❌ Fails | Queries local registry |
+| `openclaw nodes invoke` | ✅ Works | ❌ Fails | Sends command to Node |
+| `openclaw devices list` | ✅ Works | ❌ Fails | Lists pairing requests |
+| `openclaw node run` | ❌ Wrong role | ✅ Works | Node connects to Gateway |
+| `openclaw gateway run` | ✅ Works | ❌ Wrong role | Gateway listens for Nodes |
+
+**Best Practice**: Run all management commands on the **Gateway** machine.
+
+### Why Node Cannot Run `nodes status`?
+
+```
+On Gateway:
+  openclaw nodes status
+      |
+      v
+  Reads local file ~/.openclaw/nodes/paired.json
+      |
+      v
+  Returns result ✅
+
+On Node:
+  openclaw nodes status
+      |
+      v
+  Detects gateway.mode=remote
+      |
+      v
+  Tries to connect to Gateway via WebSocket
+      |
+      v
+  Requires CLI authentication token (different from node run service token)
+      |
+      v
+  Authentication fails ❌
+```
+
+## LLM Tool Calls vs CLI Commands
+
+**Important**: When users send natural language via Telegram/Slack, the LLM does NOT translate to CLI commands. Instead, it calls **Tools**.
+
+### How Natural Language Gets Processed
+
+```
+User (Telegram): "Show me the CPU usage of the Node"
+        |
+        v
+Gateway AI Agent analyzes intent
+        |
+        v
+LLM decides to call: nodes tool
+        |
+        +-- action: "run"
+        +-- node: "54.82.26.182"
+        +-- command: ["cat", "/proc/loadavg"]
+        |
+        v (WebSocket)
+Node executes: cat /proc/loadavg
+        |
+        v
+Returns: "0.15 0.10 0.05 1/234 12345"
+        |
+        v
+LLM generates natural language reply: "The Node CPU load is..."
+        |
+        v
+User receives reply
+```
+
+### nodes Tool Actions - Where They Execute
+
+| Action | Executes On | Description |
+|--------|-------------|-------------|
+| `status` | **Gateway** | Query local Node registry |
+| `describe` | **Gateway** | Get details of a specific Node |
+| `pending` | **Gateway** | List pending pairing requests |
+| `approve` | **Gateway** | Approve a pairing request |
+| `reject` | **Gateway** | Reject a pairing request |
+| `run` | **Node** | Execute shell command on Node |
+| `camera_snap` | **Node** | Take a photo |
+| `camera_clip` | **Node** | Record video |
+| `screen_record` | **Node** | Record screen |
+| `location_get` | **Node** | Get GPS location |
+| `notify` | **Node** | Send notification |
+
+### Examples: User Query → Tool Action → Execution Location
+
+| User Query | Tool Call | Execution |
+|------------|-----------|-----------|
+| "List all Nodes" | `nodes(action=status)` | Gateway local |
+| "Check CPU usage" | `nodes(action=run, command=["cat","/proc/loadavg"])` | Node remote |
+| "Take a photo" | `nodes(action=camera_snap)` | Node remote |
+| "Approve pairing" | `nodes(action=approve, requestId=xxx)` | Gateway local |
+| "How much disk space?" | `nodes(action=run, command=["df","-h","/"])` | Node remote |
+
+### Visual: Two Types of Operations
+
+```
++-------------------------------------------------------------------------+
+|                    TYPE 1: Gateway-Local Operations                     |
++-------------------------------------------------------------------------+
+|                                                                         |
+|  User: "List all Nodes" / "nodes status"                                |
+|                                                                         |
+|  +----------+    +---------+    +------------------+                    |
+|  | Telegram |--->| Gateway |--->| nodes tool       |                    |
+|  |   User   |    | AI+LLM  |    | action="status"  |                    |
+|  +----------+    +---------+    +--------+---------+                    |
+|                                          |                              |
+|                                          v                              |
+|                                 Query local registry                    |
+|                                 ~/.openclaw/nodes/                      |
+|                                          |                              |
+|                                          v                              |
+|                                 Return node list                        |
+|                                 (NO command sent to Node!)              |
+|                                                                         |
++-------------------------------------------------------------------------+
+|                    TYPE 2: Node-Remote Operations                       |
++-------------------------------------------------------------------------+
+|                                                                         |
+|  User: "Check Node CPU usage"                                           |
+|                                                                         |
+|  +----------+    +---------+    +---------------------------+           |
+|  | Telegram |--->| Gateway |--->| nodes tool                |           |
+|  |   User   |    | AI+LLM  |    | action="run"              |           |
+|  +----------+    +---------+    | command=["cat",           |           |
+|                                 |   "/proc/loadavg"]        |           |
+|                                 +-------------+-------------+           |
+|                                               |                         |
+|                                               v WebSocket               |
+|                                 +---------------------------+           |
+|                                 |           Node            |           |
+|                                 |   Execute: system.run     |           |
+|                                 |   cat /proc/loadavg       |           |
+|                                 +-------------+-------------+           |
+|                                               |                         |
+|                                               v                         |
+|                                 Return: "0.15 0.10 0.05"                |
+|                                                                         |
++-------------------------------------------------------------------------+
+```
