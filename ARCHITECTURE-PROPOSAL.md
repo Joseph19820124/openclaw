@@ -1,8 +1,10 @@
-# OpenClaw Gateway + Node 架构方案 (Final)
+# OpenClaw Gateway + Node 架构方案 (已部署)
 
 ## 概述
 
 在 AWS us-east-1 区域部署 OpenClaw 分布式架构，包含一台 Gateway 服务器和一台 Node 服务器。
+
+**部署状态：✅ 已完成**
 
 ## 架构图
 
@@ -12,140 +14,95 @@
                             ▼
                     ┌───────────────┐
                     │  Elastic IP   │
-                    │ (固定公网 IP)  │
+                    │ 44.217.250.149│
                     └───────┬───────┘
                             │
     ┌───────────────────────┼─────────────────────────────┐
     │                 AWS us-east-1                        │
-    │                                                      │
-    │  ┌────────────────────────────────────────────────┐ │
-    │  │         Security Group: openclaw-sg            │ │
-    │  │         Ports: 22, 443 (TLS)                   │ │
-    │  └────────────────────────────────────────────────┘ │
     │                                                      │
     │  ┌─────────────────┐        ┌─────────────────┐    │
     │  │   openclaw-gw   │        │  openclaw-node  │    │
     │  │   (t3.medium)   │        │   (t3.small)    │    │
     │  │                 │        │                 │    │
     │  │ ┌─────────────┐ │        │ ┌─────────────┐ │    │
-    │  │ │  Gateway    │ │◄──TLS──│ │    Node     │ │    │
-    │  │ │  :443 (wss) │ │        │ │  (Client)   │ │    │
+    │  │ │  Gateway    │ │◄──WS───│ │    Node     │ │    │
+    │  │ │  :18789     │ │        │ │  (Client)   │ │    │
     │  │ └─────────────┘ │        │ └─────────────┘ │    │
     │  │                 │        │                 │    │
-    │  │ ┌─────────────┐ │        │ ┌─────────────┐ │    │
-    │  │ │  systemd    │ │        │ │  systemd    │ │    │
-    │  │ │  service    │ │        │ │  service    │ │    │
-    │  │ └─────────────┘ │        │ └─────────────┘ │    │
-    │  │                 │        │                 │    │
-    │  │ ┌─────────────┐ │        │ ┌─────────────┐ │    │
-    │  │ │ CloudWatch  │ │        │ │ CloudWatch  │ │    │
-    │  │ │   Agent     │ │        │ │   Agent     │ │    │
-    │  │ └─────────────┘ │        │ └─────────────┘ │    │
+    │  │ 44.217.250.149  │        │  54.82.26.182   │    │
+    │  │ 172.31.31.188   │        │  172.31.17.79   │    │
     │  └─────────────────┘        └─────────────────┘    │
     │                                                      │
     └──────────────────────────────────────────────────────┘
 ```
 
-## 资源规划
+## 已部署资源
 
 ### EC2 实例
 
-| 名称 | 类型 | 用途 | 端口 | EBS 卷 |
-|------|------|------|------|--------|
-| openclaw-gw | t3.medium (2 vCPU, 4GB) | Gateway 服务器 | 22 (SSH), 443 (WSS/TLS) | 100GB gp3 |
-| openclaw-node | t3.small (2 vCPU, 2GB) | Node 客户端 | 22 (SSH) | 100GB gp3 |
+| 名称 | Instance ID | 类型 | 公网 IP | 私网 IP | EBS |
+|------|-------------|------|---------|---------|-----|
+| openclaw-gw | i-0b1fb112ce9b04e68 | t3.medium | 44.217.250.149 (EIP) | 172.31.31.188 | 100GB gp3 |
+| openclaw-node | i-0ebcf0b7de510581d | t3.small | 54.82.26.182 | 172.31.17.79 | 100GB gp3 |
 
 ### 网络配置
 
-| 资源 | 配置 |
-|------|------|
-| VPC | 使用默认 VPC |
-| Security Group | openclaw-sg |
-| Elastic IP | 绑定到 openclaw-gw |
-| Inbound Rules | SSH (22), HTTPS/WSS (443) |
+| 资源 | ID/值 |
+|------|-------|
+| Security Group | sg-0f4ea68c96f52aa6a (openclaw-sg) |
+| Elastic IP | eipalloc-0400e00ce0466d5c9 → 44.217.250.149 |
+| 开放端口 | 22 (SSH), 443, 18789 (Gateway WebSocket) |
 
-### SSH Key Pair
+### SSH Key
 
-| 项目 | 配置 |
-|------|------|
+| 项目 | 值 |
+|------|-----|
 | Key Name | openclaw-key |
-| Type | RSA 2048-bit |
-| 存储位置 | ~/.ssh/openclaw-key.pem |
+| 本地路径 | ~/.ssh/openclaw-key.pem |
 
-### AMI & 软件
+### IAM
 
-| 项目 | 选择 |
+| 资源 | 名称 |
 |------|------|
-| AMI | Amazon Linux 2023 (最新) |
-| Node.js | v22+ (通过 nvm 安装) |
-| Package Manager | pnpm v10+ |
-| CloudWatch Agent | amazon-cloudwatch-agent |
+| IAM Role | openclaw-ec2-role |
+| Instance Profile | openclaw-ec2-profile |
+| 附加策略 | CloudWatchAgentServerPolicy, AmazonSSMManagedInstanceCore |
 
-### 安装方式
+## 重要：Gateway vs Node 启动方式
 
-| 项目 | 方式 |
-|------|------|
-| OpenClaw | **源码编译** - 从 GitHub 克隆后 `pnpm install && pnpm build` |
-| 仓库地址 | https://github.com/Joseph19820124/openclaw.git |
+### ⚠️ 关键区别
 
-## 部署流程
-
-### 阶段 1: 基础设施准备
-
-1. **创建 SSH Key Pair** `openclaw-key`
-
-2. **创建 Security Group** `openclaw-sg`
-   - Inbound: SSH (22) from 0.0.0.0/0
-   - Inbound: HTTPS (443) from 0.0.0.0/0 (TLS Gateway)
-   - Outbound: All traffic
-
-3. **创建 IAM Role** `openclaw-ec2-role`
-   - Policy: CloudWatchAgentServerPolicy
-   - Policy: AmazonSSMManagedInstanceCore
-
-4. **启动 EC2 实例**
-   - openclaw-gw (t3.medium) with IAM Role
-   - openclaw-node (t3.small) with IAM Role
-
-5. **分配 Elastic IP** 并绑定到 openclaw-gw
-
-### 阶段 2: Gateway 服务器配置 (openclaw-gw)
-
+**Gateway 服务器 (openclaw-gw)** 运行 `gateway run`：
 ```bash
-# 1. 安装依赖
-sudo dnf update -y
-sudo dnf install -y git openssl
-
-# 2. 安装 Node.js 22
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-source ~/.bashrc
-nvm install 22
-nvm use 22
-
-# 3. 安装 pnpm
-npm install -g pnpm
-
-# 4. 克隆并构建 OpenClaw
-git clone https://github.com/Joseph19820124/openclaw.git
-cd openclaw
-pnpm install
-pnpm build
-
-# 5. 生成自签名 TLS 证书
-sudo mkdir -p /etc/openclaw/certs
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/openclaw/certs/server.key \
-  -out /etc/openclaw/certs/server.crt \
-  -subj "/CN=openclaw-gateway"
-sudo chmod 600 /etc/openclaw/certs/server.key
-
-# 6. 安装 CloudWatch Agent
-sudo dnf install -y amazon-cloudwatch-agent
+openclaw gateway run --bind lan --port 18789 --force --allow-unconfigured
 ```
 
-### 阶段 3: Gateway systemd 服务
+**Node 服务器 (openclaw-node)** 运行 `node run`（不是 gateway！）：
+```bash
+openclaw node run
+```
 
-**/etc/systemd/system/openclaw-gateway.service**
+### 错误示例 ❌
+
+```bash
+# 错误！Node 不应该运行 gateway
+openclaw gateway run --bind lan --port 18789
+```
+
+### 正确示例 ✅
+
+```bash
+# Gateway 服务器
+openclaw gateway run --bind lan --port 18789
+
+# Node 服务器 - 连接到 Gateway
+openclaw node run
+```
+
+## systemd 服务配置
+
+### Gateway 服务 (/etc/systemd/system/openclaw-gateway.service)
+
 ```ini
 [Unit]
 Description=OpenClaw Gateway Service
@@ -156,13 +113,8 @@ Type=simple
 User=ec2-user
 WorkingDirectory=/home/ec2-user/openclaw
 Environment=NODE_ENV=production
-Environment=PATH=/home/ec2-user/.nvm/versions/node/v22.*/bin:/usr/bin:/bin
-ExecStart=/home/ec2-user/openclaw/openclaw.mjs gateway \
-  --bind lan \
-  --port 443 \
-  --tls \
-  --tls-cert /etc/openclaw/certs/server.crt \
-  --tls-key /etc/openclaw/certs/server.key
+Environment=PATH=/home/ec2-user/.nvm/versions/node/v22.22.0/bin:/usr/bin:/bin
+ExecStart=/home/ec2-user/openclaw/openclaw.mjs gateway run --bind lan --port 18789 --force --allow-unconfigured
 Restart=always
 RestartSec=10
 
@@ -170,37 +122,8 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable openclaw-gateway
-sudo systemctl start openclaw-gateway
-```
+### Node 服务 (/etc/systemd/system/openclaw-node.service)
 
-### 阶段 4: Node 服务器配置 (openclaw-node)
-
-```bash
-# 1. 安装依赖 (同 Gateway)
-sudo dnf update -y
-sudo dnf install -y git
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-source ~/.bashrc
-nvm install 22
-nvm use 22
-npm install -g pnpm
-
-# 2. 克隆并构建 OpenClaw
-git clone https://github.com/Joseph19820124/openclaw.git
-cd openclaw
-pnpm install
-pnpm build
-
-# 3. 安装 CloudWatch Agent
-sudo dnf install -y amazon-cloudwatch-agent
-```
-
-### 阶段 5: Node systemd 服务
-
-**/etc/systemd/system/openclaw-node.service**
 ```ini
 [Unit]
 Description=OpenClaw Node Service
@@ -211,10 +134,8 @@ Type=simple
 User=ec2-user
 WorkingDirectory=/home/ec2-user/openclaw
 Environment=NODE_ENV=production
-Environment=PATH=/home/ec2-user/.nvm/versions/node/v22.*/bin:/usr/bin:/bin
-ExecStart=/home/ec2-user/openclaw/openclaw.mjs connect \
-  --gateway wss://<ELASTIC_IP>:443 \
-  --insecure
+Environment=PATH=/home/ec2-user/.nvm/versions/node/v22.22.0/bin:/usr/bin:/bin
+ExecStart=/home/ec2-user/openclaw/openclaw.mjs node run
 Restart=always
 RestartSec=10
 
@@ -222,178 +143,217 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable openclaw-node
-sudo systemctl start openclaw-node
-```
+## Node 连接 Gateway 配置
 
-### 阶段 6: CloudWatch 监控配置
+### Node 配置文件 (~/.openclaw/openclaw.json)
 
-**/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json**
 ```json
 {
-  "agent": {
-    "metrics_collection_interval": 60,
-    "run_as_user": "root"
-  },
-  "metrics": {
-    "namespace": "OpenClaw",
-    "metrics_collected": {
-      "cpu": {
-        "measurement": ["cpu_usage_active", "cpu_usage_idle"],
-        "totalcpu": true
-      },
-      "mem": {
-        "measurement": ["mem_used_percent", "mem_available"]
-      },
-      "disk": {
-        "measurement": ["disk_used_percent"],
-        "resources": ["/"]
-      }
-    },
-    "append_dimensions": {
-      "InstanceId": "${aws:InstanceId}",
-      "InstanceType": "${aws:InstanceType}"
-    }
-  },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/home/ec2-user/.openclaw/logs/*.log",
-            "log_group_name": "/openclaw/application",
-            "log_stream_name": "{instance_id}"
-          },
-          {
-            "file_path": "/var/log/messages",
-            "log_group_name": "/openclaw/system",
-            "log_stream_name": "{instance_id}"
-          }
-        ]
-      }
+  "gateway": {
+    "mode": "remote",
+    "remote": {
+      "url": "ws://44.217.250.149:18789",
+      "token": "<GATEWAY_TOKEN>"
     }
   }
 }
 ```
 
+设置命令：
 ```bash
-sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config \
-  -m ec2 \
-  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
-  -s
+openclaw config set gateway.mode remote
+openclaw config set gateway.remote.url ws://44.217.250.149:18789
+openclaw config set gateway.remote.token <GATEWAY_TOKEN>
 ```
 
-### 阶段 7: CloudWatch 告警
-
-| 告警名称 | 指标 | 阈值 | 周期 |
-|---------|------|------|------|
-| OpenClaw-GW-CPU-High | CPUUtilization | > 80% | 5 分钟 |
-| OpenClaw-GW-Memory-High | mem_used_percent | > 85% | 5 分钟 |
-| OpenClaw-GW-StatusCheck | StatusCheckFailed | >= 1 | 1 分钟 |
-| OpenClaw-Node-CPU-High | CPUUtilization | > 80% | 5 分钟 |
-| OpenClaw-Node-StatusCheck | StatusCheckFailed | >= 1 | 1 分钟 |
-
-## 配置文件
-
-### Gateway 配置 (~/.openclaw/openclaw.json)
+### Gateway 配置文件 (~/.openclaw/openclaw.json)
 
 ```json
 {
   "gateway": {
-    "mode": "server",
+    "mode": "local",
     "bind": "lan",
-    "port": 443,
-    "tls": {
-      "enabled": true,
-      "cert": "/etc/openclaw/certs/server.crt",
-      "key": "/etc/openclaw/certs/server.key"
-    },
     "auth": {
-      "enabled": true,
-      "token": "<GENERATED_TOKEN>"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "workspace": "~/.openclaw/workspace"
+      "token": "<GATEWAY_TOKEN>"
     }
   }
 }
 ```
 
-### Node 配置 (~/.openclaw/openclaw.json)
+## Node 配对流程
 
+1. Node 启动后自动尝试连接 Gateway
+2. Gateway 收到配对请求，显示在 pending 列表
+3. 在 Gateway 上批准配对：
+
+```bash
+# 查看待批准的配对请求
+openclaw devices list
+
+# 批准配对
+openclaw devices approve <request-id>
+
+# 验证连接状态
+openclaw nodes status
+```
+
+## Gateway 向 Node 发送命令
+
+### 查看 Node 状态
+
+```bash
+openclaw nodes status
+```
+
+输出示例：
+```
+Known: 1 · Paired: 1 · Connected: 1
+┌──────────────────┬────────────────┬───────────────────────┐
+│ Node             │ IP             │ Status                │
+├──────────────────┼────────────────┼───────────────────────┤
+│ ip-172-31-17-79  │ 54.82.26.182   │ paired · connected    │
+└──────────────────┴────────────────┴───────────────────────┘
+```
+
+### 执行远程命令
+
+```bash
+# 获取 CPU 负载
+openclaw nodes invoke --node 54.82.26.182 \
+  --command system.run \
+  --params '{"command":["cat","/proc/loadavg"]}'
+
+# 获取内存使用
+openclaw nodes invoke --node 54.82.26.182 \
+  --command system.run \
+  --params '{"command":["free","-h"]}'
+
+# 获取磁盘使用
+openclaw nodes invoke --node 54.82.26.182 \
+  --command system.run \
+  --params '{"command":["df","-h","/"]}'
+
+# 获取系统运行时间
+openclaw nodes invoke --node 54.82.26.182 \
+  --command system.run \
+  --params '{"command":["uptime"]}'
+```
+
+### Node 支持的命令
+
+| 命令 | 说明 |
+|------|------|
+| `system.run` | 执行 shell 命令 |
+| `system.which` | 查找命令路径 |
+| `system.execApprovals.get` | 获取执行权限配置 |
+| `system.execApprovals.set` | 设置执行权限配置 |
+| `browser.proxy` | 浏览器代理 |
+
+## Node 命令执行权限
+
+配置文件：`~/.openclaw/exec-approvals.json`
+
+当前配置（测试环境 - 允许所有命令）：
 ```json
 {
-  "gateway": {
-    "mode": "client",
-    "remote": "wss://<ELASTIC_IP>:443",
-    "token": "<GATEWAY_TOKEN>",
-    "insecure": true
-  }
+  "version": 1,
+  "socket": {
+    "path": "/home/ec2-user/.openclaw/exec-approvals.sock",
+    "token": "PDZdiZJ9LTMyBMoY73F7II-KLCNqrZ_I"
+  },
+  "defaults": {
+    "security": "full"
+  },
+  "agents": {}
 }
 ```
 
-## 安全措施
+### 安全级别
 
-| 措施 | 说明 |
+| 级别 | 说明 |
 |------|------|
-| TLS 加密 | 所有 Gateway 通信使用 WSS (WebSocket Secure) |
-| Token 认证 | Node 连接需携带认证 Token |
-| Security Group | 仅开放必要端口 (22, 443) |
-| IAM Role | 最小权限原则，仅 CloudWatch 权限 |
-| systemd | 服务自动重启，故障恢复 |
-| 自签名证书 | 初期使用，生产环境建议使用 ACM 或 Let's Encrypt |
+| `"full"` | 允许执行任意命令（当前配置） |
+| `"allowlist"` | 仅允许白名单中的命令 |
+| `"deny"` | 拒绝所有远程命令 |
+
+## CloudWatch 监控
+
+### 告警列表
+
+| 告警名称 | 指标 | 阈值 |
+|---------|------|------|
+| OpenClaw-GW-CPU-High | CPUUtilization | > 80% |
+| OpenClaw-GW-Memory-High | mem_used_percent | > 85% |
+| OpenClaw-GW-StatusCheck | StatusCheckFailed | >= 1 |
+| OpenClaw-Node-CPU-High | CPUUtilization | > 80% |
+| OpenClaw-Node-StatusCheck | StatusCheckFailed | >= 1 |
+
+### CloudWatch Agent 配置
+
+两台机器均已安装 CloudWatch Agent，收集：
+- CPU 使用率
+- 内存使用率
+- 磁盘使用率
+- 系统日志
+
+## SSH 连接
+
+```bash
+# 连接 Gateway
+ssh -i ~/.ssh/openclaw-key.pem ec2-user@44.217.250.149
+
+# 连接 Node
+ssh -i ~/.ssh/openclaw-key.pem ec2-user@54.82.26.182
+```
+
+## 服务管理
+
+```bash
+# Gateway
+sudo systemctl status openclaw-gateway
+sudo systemctl restart openclaw-gateway
+journalctl -u openclaw-gateway -f
+
+# Node
+sudo systemctl status openclaw-node
+sudo systemctl restart openclaw-node
+journalctl -u openclaw-node -f
+```
 
 ## 成本估算 (us-east-1)
 
-| 资源 | 单价 | 月费用 (估算) |
-|------|------|--------------|
-| t3.medium (on-demand) | $0.0416/hr | ~$30/月 |
-| t3.small (on-demand) | $0.0208/hr | ~$15/月 |
-| EBS (100GB gp3 x2) | $0.08/GB | ~$16/月 |
-| Elastic IP (使用中) | $0.005/hr | ~$3.6/月 |
-| CloudWatch Logs (5GB) | $0.50/GB | ~$2.5/月 |
-| CloudWatch Metrics | 基本免费 | ~$0 |
-| **总计** | | **~$67/月** |
+| 资源 | 月费用 |
+|------|--------|
+| t3.medium (on-demand) | ~$30 |
+| t3.small (on-demand) | ~$15 |
+| EBS (100GB gp3 x2) | ~$16 |
+| Elastic IP | ~$3.6 |
+| CloudWatch | ~$2.5 |
+| **总计** | **~$67/月** |
 
-## 实施步骤清单
+## 注意事项
 
-- [ ] 1. 创建 SSH Key Pair `openclaw-key`
-- [ ] 2. 创建 IAM Role `openclaw-ec2-role`
-- [ ] 3. 创建 Security Group `openclaw-sg`
-- [ ] 4. 启动 EC2: openclaw-gw (t3.medium)
-- [ ] 5. 启动 EC2: openclaw-node (t3.small)
-- [ ] 6. 分配并绑定 Elastic IP
-- [ ] 7. 配置 openclaw-gw (安装软件、TLS 证书、systemd)
-- [ ] 8. 配置 openclaw-node (安装软件、systemd)
-- [ ] 9. 配置 CloudWatch Agent (两台)
-- [ ] 10. 创建 CloudWatch 告警
-- [ ] 11. 验证 Node 注册到 Gateway
-- [ ] 12. 端到端测试
+1. **这是测试环境**，与生产环境物理隔离
+2. Node 命令执行权限设置为 `full`，生产环境应使用 `allowlist`
+3. 当前使用 HTTP/WS（端口 18789），未启用 TLS
+4. Gateway Token 已配置，Node 连接需要提供正确的 token
 
-## 验证命令
+## 故障排除
 
-```bash
-# 在 Gateway 上检查服务状态
-sudo systemctl status openclaw-gateway
+### Node 无法连接 Gateway
 
-# 在 Node 上检查服务状态
-sudo systemctl status openclaw-node
+1. 检查 Security Group 是否开放 18789 端口
+2. 检查 Node 配置的 `gateway.remote.url` 和 `gateway.remote.token`
+3. 查看 Node 日志：`journalctl -u openclaw-node -f`
 
-# 检查 Gateway 日志
-journalctl -u openclaw-gateway -f
+### 配对请求未出现
 
-# 检查已注册的节点
-cd ~/openclaw && ./openclaw.mjs nodes list
+1. 确认 Node 使用 `node run` 而不是 `gateway run`
+2. 检查 Gateway 日志中是否有连接记录
+3. 重启 Node 服务：`sudo systemctl restart openclaw-node`
 
-# 测试 TLS 连接
-openssl s_client -connect <ELASTIC_IP>:443
-```
+### 命令执行被拒绝
 
----
-
-**确认后我将开始执行上述 12 个实施步骤。**
+1. 检查 Node 的 `~/.openclaw/exec-approvals.json`
+2. 确认 `defaults.security` 不是 `deny`
+3. 重启 Node 服务使配置生效
