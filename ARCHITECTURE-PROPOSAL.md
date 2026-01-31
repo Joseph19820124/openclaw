@@ -424,3 +424,181 @@ openclaw models set zai/glm-4.6
 1. 检查 Node 的 `~/.openclaw/exec-approvals.json`
 2. 确认 `defaults.security` 不是 `deny`
 3. 重启 Node 服务使配置生效
+
+## AI Agent Architecture (Gateway vs Node Responsibilities)
+
+### Core Concept
+
+- **Gateway** = The Brain (runs AI Agent + calls LLM)
+- **Node** = The Hands (only executes commands, no AI logic)
+- **LLM** = Only called on Gateway side, Node has zero AI capability
+
+### Gateway Can Query Paired Nodes
+
+```bash
+# On Gateway, check all paired nodes
+openclaw nodes status
+
+# Output:
+# Known: 1 · Paired: 1 · Connected: 1
+```
+
+Node pairing data is stored at `~/.openclaw/nodes/paired.json`.
+
+### Node Registration Model
+
+- A Node can only connect to **ONE Gateway at a time**
+- Node config stores single gateway: `gateway.remote.url`
+- To switch Gateway: change config and re-pair (no explicit "unregister" needed)
+- Old Gateway will see the Node as "disconnected" (pairing record remains)
+
+### Complete Request Flow Diagram
+
+```
++-----------------------------------------------------------------------------+
+|                         COMPLETE REQUEST FLOW                               |
++-----------------------------------------------------------------------------+
+
++----------+     +----------------------------------------------------------+
+| Telegram |     |                      Gateway (GW)                        |
+|   User   |     |                                                          |
++----+-----+     |  +-----------+    +------------+    +--------------+     |
+     |           |  | Telegram  |    |  AI Agent  |    |  nodes-tool  |     |
+     |           |  |   Bot     |--->| (Pi Agent) |--->|              |     |
+     | "Query    |  +-----------+    +-----+------+    +------+-------+     |
+     |  CPU"     |                         |                  |             |
+     +-----------+-------------------------+                  |             |
+     |           |                         |                  |             |
+     |           |                         v                  |             |
+     |           |               +-----------------+          |             |
+     |           |               |    Z.AI LLM     |          |             |
+     |           |               |   (GLM-4.6)     |          |             |
+     |           |               +--------+--------+          |             |
+     |           |                        |                   |             |
+     |           |  "I need to call       |                   |             |
+     |           |   nodes tool"          v                   |             |
+     |           |               +-----------------+          |             |
+     |           |               | Tool Execution  |<---------+             |
+     |           |               |  node.invoke    |                        |
+     |           |               +--------+--------+                        |
+     |           |                        |                                 |
+     +-----------+------------------------+----------------------------------+
+                 |                        |
+                 |                        | WebSocket (port 18789)
+                 |                        v
+                 |          +----------------------------------+
+                 |          |             Node                 |
+                 |          |                                  |
+                 |          |  Received: system.run            |
+                 |          |  params: ["cat","/proc/loadavg"] |
+                 |          |                                  |
+                 |          |  +---------------------------+   |
+                 |          |  | Execute: cat /proc/loadavg|   |
+                 |          |  | Result: 0.15 0.10 0.05... |   |
+                 |          |  +---------------------------+   |
+                 |          |                                  |
+                 |          +----------------+-----------------+
+                 |                           |
+                 |                           | Return result
+                 |                           v
+                 |          +-------------------------------------+
+                 |          |           Gateway (GW)              |
+                 |          |                                     |
+                 |          |  AI Agent receives tool result      |
+                 |          |  |                                  |
+                 |          |  v                                  |
+                 |          |  Call LLM to generate final reply   |
+                 |          |  |                                  |
+                 |          |  v                                  |
+                 |          |  "Node CPU load: 0.15, 0.10, 0.05"  |
+                 |          +-------------------------------------+
+                 |                           |
+                 |                           | Send reply
+                 v                           v
+          +----------+              +--------------+
+          | Telegram |<-------------|  Bot Reply   |
+          |   User   |              |              |
+          +----------+              +--------------+
+```
+
+### Simplified Flow
+
+```
+User (Telegram/Slack/etc.)
+    | "Query Node CPU usage"
+    v
+Gateway (receives message)
+    |
+    v
+AI Agent (analyzes user intent)
+    |
+    v
+LLM (Z.AI GLM-4.6)
+    | Decides to call nodes tool
+    v
+Tool: nodes (action=run, command=["cat", "/proc/loadavg"])
+    | WebSocket
+    v
+Node (executes command)
+    | Returns: "0.15 0.10 0.05 1/234 12345"
+    v
+Gateway (receives result)
+    |
+    v
+LLM (generates natural language reply)
+    | "Node CPU load: 1min=0.15, 5min=0.10, 15min=0.05"
+    v
+Gateway (sends reply)
+    |
+    v
+User (Telegram) receives reply
+```
+
+### Key Source Code Locations
+
+| Step | Source File | Description |
+|------|-------------|-------------|
+| 1. Message entry | `src/telegram/bot-message.ts` | Receives Telegram message |
+| 2. Message dispatch | `src/telegram/bot-message-dispatch.ts` | Dispatches to AI Agent |
+| 3. AI Agent run | `src/auto-reply/reply/agent-runner.ts` | Runs Pi Agent (AI) |
+| 4. Call LLM | `src/agents/pi-embedded-runner.ts` | Calls Z.AI GLM-4.6 |
+| 5. Nodes tool | `src/agents/tools/nodes-tool.ts` | Provides `nodes` tool to LLM |
+| 6. Send to Node | `callGatewayTool("node.invoke", ...)` | Sends via WebSocket |
+| 7. Node executes | `src/node-host/runner.ts` | Executes `system.run` |
+
+### nodes-tool.ts - The "run" Action
+
+```typescript
+// src/agents/tools/nodes-tool.ts:388-441
+case "run": {
+  const node = readStringParam(params, "node", { required: true });
+  const nodeId = resolveNodeIdFromList(nodes, node);
+
+  // Send invoke request to Node via Gateway
+  const raw = await callGatewayTool("node.invoke", gatewayOpts, {
+    nodeId,
+    command: "system.run",           // Command type for Node
+    params: {
+      command,                        // e.g.: ["cat", "/proc/loadavg"]
+      cwd,
+      env,
+      timeoutMs: commandTimeoutMs,
+    },
+  });
+
+  return jsonResult(raw?.payload ?? {});
+}
+```
+
+### Why This Architecture?
+
+| Component | Responsibility | Has LLM? | Has AI Logic? |
+|-----------|----------------|----------|---------------|
+| **Gateway** | Central hub, runs AI Agent, calls LLM, routes messages | Yes | Yes |
+| **Node** | Execution endpoint, runs commands, returns results | No | No |
+
+This separation allows:
+1. **Centralized AI**: Only Gateway needs LLM API keys
+2. **Scalability**: Many Nodes can connect to one Gateway
+3. **Security**: Node only executes pre-approved commands
+4. **Simplicity**: Node is lightweight (no AI dependencies)
